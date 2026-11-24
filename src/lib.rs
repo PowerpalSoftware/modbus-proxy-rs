@@ -226,13 +226,18 @@ impl Bridge {
 
 #[derive(Debug, Deserialize)]
 pub struct Server {
+    // No devices is a valid config: the proxy then idles (see `run`).
+    #[serde(default)]
     devices: Vec<Bridge>,
 }
 
 impl Server {
     pub fn new(config_file: &str) -> std::result::Result<Self, config::ConfigError> {
+        // A missing file reads as a config without devices, so a deployment that ships the proxy
+        // everywhere runs on hosts that have nothing for it to proxy. A file that does not parse is
+        // still an error.
         let settings = config::Config::builder()
-            .add_source(config::File::with_name(config_file))
+            .add_source(config::File::with_name(config_file).required(false))
             .build()?;
         settings.try_deserialize()
     }
@@ -243,10 +248,19 @@ impl Server {
             tasks.push(tokio::spawn(async move { bridge.run().await }));
         }
 
+        // Without devices there is nothing to wait for, and exiting would only have a supervisor
+        // such as Docker restart the proxy over and over. Wait for the signal instead.
+        let devices = async {
+            if tasks.is_empty() {
+                std::future::pending::<()>().await;
+            }
+            join_all(tasks).await;
+        };
+
         #[cfg(unix)]
         let mut sigterm = signal(SignalKind::terminate()).unwrap();
         tokio::select! {
-            _ = join_all(tasks) => debug!("All tasks finished"),
+            _ = devices => debug!("All tasks finished"),
             _ = tokio::signal::ctrl_c() => debug!("Received Ctrl+C"),
             //#[cfg(unix)]
             _ = sigterm.recv() => debug!("Received SIGTERM"),
@@ -256,6 +270,15 @@ impl Server {
     }
 
     pub async fn launch(config_file: &str) -> std::result::Result<(), config::ConfigError> {
-        Ok(Self::new(config_file)?.run().await)
+        let server = Self::new(config_file)?;
+        if server.devices.is_empty() {
+            // Not through the logger: its default level hides warnings, and this is what an operator
+            // looks for when the proxy does nothing.
+            eprintln!(
+                "No devices in {} (missing or empty): idling until stopped",
+                config_file
+            );
+        }
+        Ok(server.run().await)
     }
 }
