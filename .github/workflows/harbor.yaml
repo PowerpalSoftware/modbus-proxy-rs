@@ -1,0 +1,76 @@
+name: Build & Push to Harbor
+
+# Pull requests only build. master and v* tags push to Harbor, which is reachable only over
+# Tailscale. The repository is public, so pull requests from forks get no secrets; only pushes to
+# this repository use them.
+on:
+  push:
+    branches: [ master ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ master ]
+
+permissions:
+  contents: read
+
+env:
+  HARBOR_REGISTRY: ${{ vars.HARBOR_URL }}
+  HARBOR_PROJECT:  ${{ vars.HARBOR_PROJECT }}
+  IMAGE_NAME:      modbus-proxy
+  # Only the gateways run it, and they are arm64.
+  PLATFORMS:       linux/arm64
+
+jobs:
+  image:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tailscale up
+        if: github.event_name == 'push'
+        uses: tailscale/github-action@v3
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret:    ${{ secrets.TS_OAUTH_SECRET }}
+          tags:            ${{ vars.TAILSCALE_TAGS }}
+
+      # The Dockerfile cross-compiles, so no QEMU is needed for arm64.
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver: docker-container
+          driver-opts: |
+            network=host
+
+      - name: Login to Harbor
+        if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.HARBOR_REGISTRY }}
+          username: ${{ secrets.HARBOR_USERNAME }}
+          password: ${{ secrets.HARBOR_PASSWORD }}
+
+      # master: latest and sha-<commit>. v1.2.3 tags: 1.2.3 and 1.2.
+      - id: meta
+        name: Docker metadata
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,prefix=sha-,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          push: ${{ github.event_name == 'push' }}
+          platforms: ${{ env.PLATFORMS }}
+          network: host
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

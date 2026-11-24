@@ -90,6 +90,17 @@ First, build the docker image with:
 $ docker build -t modbus-proxy .
 ```
 
+The build cross-compiles for the target platform, so an arm64 image builds on an amd64 host
+without emulation:
+
+```bash
+$ docker buildx build --platform linux/arm64 -t modbus-proxy .
+```
+
+CI (`.github/workflows/harbor.yaml`) builds `linux/arm64`, the gateways' platform, on every pull
+request and pushes it to Harbor as `modbus-proxy` on pushes to `master` (`latest`, `sha-<commit>`)
+and on `v*` tags (`1.2.3`, `1.2`).
+
 Assuming you have prepared a `config.yml` in the current directory:
 
 ```yaml
