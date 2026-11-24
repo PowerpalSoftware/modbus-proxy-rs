@@ -1,3 +1,5 @@
+use std::process::ExitCode;
+
 use structopt::StructOpt;
 
 use modbus_proxy_rs::Server;
@@ -17,10 +19,12 @@ struct CmdLine {
 }
 
 #[tokio::main(flavor = "current_thread")]
-async fn main() {
+async fn main() -> ExitCode {
     env_logger::init();
     let args = CmdLine::from_args();
     if let Err(error) = Server::launch(&args.config_file).await {
-        eprintln!("Configuration error: {}", error)
+        eprintln!("Configuration error: {}", error);
+        return ExitCode::FAILURE;
     }
+    ExitCode::SUCCESS
 }
